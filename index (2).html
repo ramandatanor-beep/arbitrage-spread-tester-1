@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spread Analyzer – rapporto tra due coppie crypto</title>
+<style>
+:root{--bg:#f4f6f8;--fg:#12161c;--card:#fff;--mut:#556070;--bd:#d6dce4;--ac:#0a58ca;--ok:#0a7d3b;--ko:#b42318;--wa:#8a5a00}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6eaf0;--card:#161b22;--mut:#9aa5b4;--bd:#2b333d;--ac:#6ea0ff;--ok:#4cc38a;--ko:#ff7b72;--wa:#e3b341}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 Georgia,"Times New Roman",serif}
+main{max-width:980px;margin:0 auto;padding:20px 14px 48px}
+h1{font-size:1.7rem;margin:.2em 0}h2{font-size:1.2rem;margin:.2em 0}h3{font-size:1rem;margin:1em 0 .3em}
+.mut{color:var(--mut);font-size:.9rem}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:6px;padding:14px;margin:14px 0}
+form{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+label{display:flex;flex-direction:column;font:.8rem system-ui,sans-serif;color:var(--mut);gap:3px}
+input,select,button{font:1rem system-ui,sans-serif;padding:8px;border:1px solid var(--bd);border-radius:4px;background:var(--bg);color:var(--fg)}
+button{background:var(--ac);color:#fff;border-color:var(--ac);cursor:pointer;align-self:end}
+button:disabled{opacity:.5}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+.tw{overflow-x:auto}table{border-collapse:collapse;width:100%;font:.85rem system-ui,sans-serif}
+th,td{padding:5px 8px;border-bottom:1px solid var(--bd);text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left}
+tr.best td{font-weight:700;background:color-mix(in srgb,var(--ac) 12%,transparent)}
+.b{display:inline-block;padding:2px 8px;border-radius:3px;font:700 .8rem system-ui,sans-serif;color:#fff}
+.ok{background:var(--ok)}.ko{background:var(--ko)}.wa{background:var(--wa)}
+.err{color:var(--ko);font-weight:700}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:2px 14px;margin:.4em 0;font:.9rem system-ui,sans-serif}dt{color:var(--mut)}dd{margin:0}
+</style>
+</head>
+<body>
+<main>
+<h1>Spread Analyzer</h1>
+<p class="mut">Inserisci due coppie spot Binance. Il sito scarica le candele pubbliche, calcola il rapporto in entrambe le direzioni e testa una strategia di ritorno alla media sui dati reali. Nulla viene stimato o riempito: dove i dati mancano, l’analisi lo dichiara.</p>
+
+<div class="card">
+<form id="f">
+<label>Coppia A<input id="a" value="ETHUSDT" required></label>
+<label>Coppia B<input id="b" value="BTCUSDT" required></label>
+<label>Timeframe<select id="iv"><option>15m</option><option selected>1h</option><option>4h</option><option>1d</option></select></label>
+<label>Candele<select id="n"><option>1000</option><option selected>2000</option><option>3000</option></select></label>
+<label>Finestra media (barre)<input id="W" type="number" value="100" min="20" max="500"></label>
+<label>Durata max trade (barre)<input id="hold" type="number" value="48" min="2"></label>
+<label>Stop oltre soglia (in z)<input id="slz" type="number" value="1.5" step="0.1" min="0.3"></label>
+<label>Commissione per lato (%)<input id="fee" type="number" value="0.1" step="0.01" min="0"></label>
+<label>Slippage per lato (%)<input id="slip" type="number" value="0.05" step="0.01" min="0"></label>
+<button id="go">Analizza</button>
+</form>
+<p id="st" class="mut" role="status"></p>
+</div>
+<div id="out"></div>
+
+<div class="card mut">
+<h3>Come leggere il prospetto</h3>
+<p><b>BUY X/Y</b> = long X e short Y a nozionale uguale (guadagna se il rapporto sale). <b>SELL X/Y</b> = l’opposto. Il rapporto B/A è l’inverso di A/B: i due prospetti sono quasi speculari, ma le soglie in z differiscono perché 1/x non è lineare.</p>
+<p>L’ingresso simulato avviene all’apertura della barra successiva al segnale. Take profit: ritorno alla media mobile calcolata al segnale. Stop loss: z oltre la soglia di ingresso di quanto impostato. Le uscite sono valutate sulle chiusure. Costi: 4 esecuzioni (2 gambe × ingresso e uscita) × (commissione + slippage).</p>
+<p>La soglia “migliore” è scelta solo sul primo 70% dei dati (IS); il restante 30% (OOS) non viene usato per scegliere ed è il dato più onesto. La probabilità è la frequenza storica di trade chiusi in utile netto, con intervallo di Wilson al 95%. Con meno di 10 trade nel campione l’esito è “insufficiente”. Non è consulenza finanziaria: i risultati passati non garantiscono quelli futuri e un rapporto può smettere di tornare alla media.</p>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const STEP={"15m":9e5,"1h":36e5,"4h":144e5,"1d":864e5};
+const HOSTS=["https://api.binance.com","https://data-api.binance.vision"];
+const GRID=[1,1.5,2,2.5,3];
+const clean=s=>s.toUpperCase().replace(/[^A-Z0-9]/g,"");
+const f=v=>isFinite(v)?Number(v.toPrecision(5)).toString():"–";
+const pc=v=>isFinite(v)?(v*100).toFixed(1)+"%":"–";
+
+async function klines(sym,iv,n){
+  let out=[],end=null;
+  while(out.length<n){
+    const lim=Math.min(1000,n-out.length);let rows=null,err;
+    for(const h of HOSTS){
+      try{
+        const r=await fetch(`${h}/api/v3/klines?symbol=${sym}&interval=${iv}&limit=${lim}`+(end?`&endTime=${end}`:""));
+        if(!r.ok)throw new Error(r.status+" "+(await r.text()).slice(0,90));
+        rows=await r.json();break;
+      }catch(e){err=e}
+    }
+    if(!rows)throw new Error(sym+": "+err.message);
+    if(!rows.length)break;
+    out=rows.concat(out);end=rows[0][0]-1;
+    if(rows.length<lim)break;
+  }
+  const now=Date.now();
+  return out.filter(k=>k[6]<now).map(k=>({t:k[0],o:+k[1],c:+k[4]}));
+}
+function align(a,b,step){
+  const mb=new Map(b.map(k=>[k.t,k])),sa=new Set(a.map(k=>k.t)),rows=[];let onlyA=0,bad=0;
+  for(const k of a){
+    const m=mb.get(k.t);
+    if(!m){onlyA++;continue}
+    if(!(k.o>0&&k.c>0&&m.o>0&&m.c>0)){bad++;continue}
+    rows.push({t:k.t,ao:k.o,ac:k.c,bo:m.o,bc:m.c});
+  }
+  const onlyB=b.filter(k=>!sa.has(k.t)).length;let gaps=0;
+  for(let i=1;i<rows.length;i++)if(rows[i].t-rows[i-1].t>step)gaps++;
+  return{rows,onlyA,onlyB,bad,gaps};
+}
+function rolling(r,W){
+  const m=[],s=[];
+  for(let i=0;i<r.length;i++){
+    if(i<W-1){m.push(NaN);s.push(NaN);continue}
+    let u=0;for(let j=i-W+1;j<=i;j++)u+=r[j];u/=W;
+    let v=0;for(let j=i-W+1;j<=i;j++)v+=(r[j]-u)**2;
+    m.push(u);s.push(Math.sqrt(v/(W-1)));
+  }
+  return{m,s};
+}
+function wilson(k,n){
+  if(!n)return[NaN,NaN];
+  const z=1.96,p=k/n,d=1+z*z/n,c=p+z*z/(2*n),q=z*Math.sqrt(p*(1-p)/n+z*z/(4*n*n));
+  return[(c-q)/d,(c+q)/d];
+}
+function bt(d,side,th,P,from,to){
+  const T=[],cost=4*(P.fee+P.slip);let i=Math.max(from,P.W+1);
+  while(i<to-1){
+    const z=(d.r[i]-d.m[i])/d.s[i],zp=(d.r[i-1]-d.m[i-1])/d.s[i-1];
+    const sig=side>0?(z<=-th&&zp>-th):(z>=th&&zp<th);
+    if(!sig||!(d.s[i]>0)){i++;continue}
+    const e=i+1,mean=d.m[i],sd=d.s[i],sl=mean-side*(th+P.slz)*sd,last=e+P.hold;
+    let x=Math.min(last,to-1),why="TEMPO";
+    for(let j=e;j<=Math.min(last,to-1);j++){
+      if(side*(d.r[j]-mean)>=0){x=j;why="TP";break}
+      if(side*(d.r[j]-sl)<=0){x=j;why="SL";break}
+    }
+    if(why==="TEMPO"&&last>to-1)break;
+    const g=(d.xc[x]/d.xo[e]-1)-(d.yc[x]/d.yo[e]-1);
+    T.push({net:side*g-cost,why});i=x+1;
+  }
+  return T;
+}
+function sum(T){
+  const n=T.length,w=T.filter(t=>t.net>0).length,[lo,hi]=wilson(w,n);
+  return{n,wr:n?w/n:NaN,lo,hi,avg:n?T.reduce((s,t)=>s+t.net,0)/n:NaN,
+    tp:T.filter(t=>t.why==="TP").length,sl:T.filter(t=>t.why==="SL").length,tm:T.filter(t=>t.why==="TEMPO").length};
+}
+function analyze(rows,inv,P){
+  const d={xo:rows.map(r=>inv?r.bo:r.ao),xc:rows.map(r=>inv?r.bc:r.ac),yo:rows.map(r=>inv?r.ao:r.bo),yc:rows.map(r=>inv?r.ac:r.bc)};
+  d.r=d.xc.map((v,i)=>v/d.yc[i]);Object.assign(d,rolling(d.r,P.W));
+  const n=d.r.length,cut=Math.floor(n*.7);
+  const sides=[1,-1].map(side=>{
+    const grid=GRID.map(th=>({th,is:sum(bt(d,side,th,P,0,cut)),oos:sum(bt(d,side,th,P,cut,n))}));
+    let best=null;
+    for(const g of grid)if(g.is.n>=10&&(!best||g.is.avg>best.is.avg))best=g;
+    return{side,grid,best};
+  });
+  return{d,sides};
+}
+function verdict(b){
+  if(!b)return["Dati insufficienti (meno di 10 trade IS)","wa"];
+  if(b.oos.n<10)return["Campione OOS insufficiente","wa"];
+  return b.oos.avg>0&&b.oos.wr>=.5?["Evidenza favorevole","ok"]:["Evidenza sfavorevole","ko"];
+}
+function render(x,y,A,P){
+  const d=A.d,k=d.r.length-1,r=d.r[k],m=d.m[k],s=d.s[k],z=(r-m)/s;
+  let h=`<section class="card"><h2>Rapporto ${x}/${y}</h2><p class="mut">Valore attuale ${f(r)} · media ${P.W} barre ${f(m)} · z = ${z.toFixed(2)}</p>`;
+  for(const S of A.sides){
+    const lab=S.side>0?`BUY ${x}/${y} (long ${x}, short ${y})`:`SELL ${x}/${y} (short ${x}, long ${y})`;
+    const [vt,cl]=verdict(S.best);
+    h+=`<h3>${lab} <span class="b ${cl}">${vt}</span></h3>`;
+    if(S.best){
+      const b=S.best,sl=m-S.side*(b.th+P.slz)*s,trig=m-S.side*b.th*s;
+      const act=S.side>0?z<=-b.th:z>=b.th;
+      h+=`<dl><dt>Stato</dt><dd>${act?"Segnale attivo: soglia già superata":"In attesa: la soglia non è stata raggiunta"}</dd>
+      <dt>Ingresso</dt><dd>${act?"≈ "+f(r)+" (ratio attuale; esecuzione simulata all’apertura successiva)":"quando il rapporto raggiunge "+f(trig)+" (|z| ≥ "+b.th+")"}</dd>
+      <dt>Take profit</dt><dd>${f(m)} (ritorno alla media)</dd>
+      <dt>Stop loss</dt><dd>${f(sl)} (z = ${(-S.side*(b.th+P.slz)).toFixed(1)})</dd>
+      <dt>Probabilità OOS</dt><dd>${b.oos.n?pc(b.oos.wr)+" (IC95% "+pc(b.oos.lo)+" – "+pc(b.oos.hi)+", n = "+b.oos.n+")":"nessun trade nel campione OOS"}</dd>
+      <dt>Probabilità IS</dt><dd>${pc(b.is.wr)} (IC95% ${pc(b.is.lo)} – ${pc(b.is.hi)}, n = ${b.is.n})</dd>
+      <dt>Esiti OOS</dt><dd>TP ${b.oos.tp} · SL ${b.oos.sl} · scadenza ${b.oos.tm}</dd></dl>`;
+    }
+    h+=`<div class="tw"><table><tr><th>Soglia |z|</th><th>N IS</th><th>Win IS</th><th>Netto medio IS</th><th>N OOS</th><th>Win OOS</th><th>Netto medio OOS</th></tr>`;
+    for(const g of S.grid)h+=`<tr class="${g===S.best?"best":""}"><td>${g.th}</td><td>${g.is.n}</td><td>${pc(g.is.wr)}</td><td>${pc(g.is.avg)}</td><td>${g.oos.n}</td><td>${pc(g.oos.wr)}</td><td>${pc(g.oos.avg)}</td></tr>`;
+    h+=`</table></div>`;
+  }
+  return h+`</section>`;
+}
+function corr(rows){
+  const a=[],b=[];
+  for(let i=1;i<rows.length;i++){a.push(Math.log(rows[i].ac/rows[i-1].ac));b.push(Math.log(rows[i].bc/rows[i-1].bc))}
+  const ma=a.reduce((s,v)=>s+v,0)/a.length,mb=b.reduce((s,v)=>s+v,0)/b.length;
+  let c=0,va=0,vb=0;for(let i=0;i<a.length;i++){c+=(a[i]-ma)*(b[i]-mb);va+=(a[i]-ma)**2;vb+=(b[i]-mb)**2}
+  return c/Math.sqrt(va*vb);
+}
+$("f").addEventListener("submit",async e=>{
+  e.preventDefault();
+  const A=clean($("a").value),B=clean($("b").value),iv=$("iv").value,out=$("out"),st=$("st"),go=$("go");
+  const P={W:+$("W").value,hold:+$("hold").value,slz:+$("slz").value,fee:+$("fee").value/100,slip:+$("slip").value/100};
+  out.innerHTML="";
+  if(!A||!B||A===B){st.innerHTML='<span class="err">Inserisci due coppie diverse (es. ETHUSDT e BTCUSDT).</span>';return}
+  go.disabled=true;st.textContent="Scarico i dati…";
+  try{
+    const [ka,kb]=await Promise.all([klines(A,iv,+$("n").value),klines(B,iv,+$("n").value)]);
+    const al=align(ka,kb,STEP[iv]);
+    if(al.rows.length<P.W*3)throw new Error(`Solo ${al.rows.length} candele in comune: troppo poche per una finestra di ${P.W} barre.`);
+    const d0=t=>new Date(t).toISOString().slice(0,16).replace("T"," ");
+    let h=`<section class="card"><h2>Qualità dei dati</h2><dl>
+      <dt>Periodo</dt><dd>${d0(al.rows[0].t)} → ${d0(al.rows.at(-1).t)} UTC</dd>
+      <dt>Candele</dt><dd>${A}: ${ka.length} · ${B}: ${kb.length} · in comune: ${al.rows.length}</dd>
+      <dt>Escluse</dt><dd>${al.onlyA} solo in ${A}, ${al.onlyB} solo in ${B}, ${al.bad} con prezzi non validi</dd>
+      <dt>Buchi temporali</dt><dd>${al.gaps} (nessun valore interpolato; le barre dopo un buco sono contigue solo nell’indice)</dd>
+      <dt>Correlazione rendimenti</dt><dd>${corr(al.rows).toFixed(2)}</dd>
+      <dt>Candela in corso</dt><dd>esclusa: si usano solo candele chiuse</dd></dl></section>`;
+    h+=render(A,B,analyze(al.rows,false,P),P)+render(B,A,analyze(al.rows,true,P),P);
+    out.innerHTML=h;st.textContent="Analisi completata.";
+  }catch(err){
+    st.innerHTML=`<span class="err">Errore: ${String(err.message).replace(/</g,"&lt;")}. Verifica i simboli (formato Binance, es. SOLUSDT) o riprova più tardi.</span>`;
+  }
+  go.disabled=false;
+});
+</script>
+</body>
+</html>

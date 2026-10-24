@@ -45,3 +45,7 @@ Se un browser o una rete blocca le richieste a Binance (alcuni paesi o VPN), com
 
 - **Funding:** il riquadro "Funding spot + perpetual" scarica fino a 1000 rilevazioni da `fapi.binance.com`, mostra il funding mese per mese, il rendimento medio lordo e netto sul capitale impegnato (spot + margine del perpetual) e quanti mesi completi hanno superato il 2%. Non include la variazione della base, la liquidazione della gamba short né il rischio exchange.
 - **Peggior trade OOS:** nella tabella delle soglie, la nuova colonna mostra la perdita peggiore del campione di verifica. Per simulare "TP senza SL" imposta "Margine prima dell’uscita in perdita" a 99: resta solo l'uscita a tempo, e la colonna mostra il rischio che il TP nasconde.
+
+## Exchange supportati
+
+Per ogni coppia puoi scegliere **Binance spot**, **KuCoin Futures** o **BingX Futures**. Scrivi il simbolo sempre come `BTCUSDT` o `USDCUSDT`: il sito lo adatta (KuCoin `XBTUSDTM`, BingX `BTC-USDT`). KuCoin e BingX sono futures, quindi i prezzi includono la differenza rispetto allo spot. Se due exchange hanno candele non allineate (può succedere con 4h e 1d) il riquadro "Qualità dei dati" mostra quante sono state escluse. Le richieste partono dal tuo browser: se un exchange le blocca compare un errore chiaro e nessun dato viene inventato.
